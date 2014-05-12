@@ -20,6 +20,8 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <arpa/inet.h>
+#include <string.h>
 #include "libAACdec/include/aacdecoder_lib.h"
 #include "wavwriter.h"
 
@@ -39,12 +41,30 @@ int main(int argc, char *argv[]) {
 	infile = argv[1];
 	outfile = argv[2];
 
-	handle = aacDecoder_Open(TT_MP4_ADTS, 1);
+	handle = aacDecoder_Open(TT_MP4_RAW, 1);
 	in = fopen(infile, "rb");
 	if (!in) {
 		perror(infile);
 		return 1;
 	}
+
+  // Generate an AudioSpecificConfig
+  UCHAR buffer[1024];
+  memset(buffer, 0, 1024);
+
+  buffer[0] = 0xF8; // 5 bits == 31, followed by 3 bits of 0
+  // We just want upper 3 bits to equal 7 (because 32 + 7 == 39 == AAC_ELD), followed by next 4 bits
+  // equal to 4 for 44.1KHz. 1 bit left over at 0.
+  buffer[1] = 0xE8;
+  // next 3 bits (and 1 unused prev bit) mean channel specific config == 1 single channel.
+  buffer[2] = 0x20;
+
+  UCHAR* configs[1];
+  UINT sizes[1];
+  sizes[0]   = 16;
+  configs[0] = buffer;
+
+  aacDecoder_ConfigRaw(handle, configs, sizes);
 
 	output_size = 8*2*1024;
 	output_buf = (uint8_t*) malloc(output_size);
@@ -52,19 +72,23 @@ int main(int argc, char *argv[]) {
 
 	while (1) {
 		uint8_t packet[10240], *ptr = packet;
-		int n, packet_size, i;
+		uint32_t n, packet_size_big, packet_size, i;
 		UINT valid;
 		AAC_DECODER_ERROR err;
-		n = fread(packet, 1, 7, in);
-		if (n != 7)
-			break;
-		if (packet[0] != 0xff || (packet[1] & 0xf0) != 0xf0) {
+		n = fread(&packet_size_big, 4, 1, in);
+		if (n != 1) {
+      break;
+    }
+
+    packet_size = htonl(packet_size_big);
+
+    fprintf(stderr, "Packet size %d\n", packet_size);
+		/*if (packet[0] != 0xff || (packet[1] & 0xf0) != 0xf0) {
 			fprintf(stderr, "Not an ADTS packet\n");
 			break;
-		}
-		packet_size = ((packet[3] & 0x03) << 11) | (packet[4] << 3) | (packet[5] >> 5);
-		n = fread(packet + 7, 1, packet_size - 7, in);
-		if (n != packet_size - 7) {
+		}*/
+		n = fread(packet, 1, packet_size, in);
+		if (n != packet_size) {
 			fprintf(stderr, "Partial packet\n");
 			break;
 		}
@@ -110,4 +134,3 @@ int main(int argc, char *argv[]) {
 	aacDecoder_Close(handle);
 	return 0;
 }
-
